@@ -11,17 +11,17 @@ from typing import List, Tuple, Dict, Any
 INITIAL_CAPITAL = 30000  # 初始资金（人民币）
 SHARE_LOT = 100  # 每次交易股数为100的倍数
 FEE_PER_10000 = 1  # 每10000元交易额收取1元交易费
-START_DATE = '2025-04-01'
-END_DATE = '2025-05-07'
-FILE_PATH = '/Users/apple/Desktop/MyProject/TradeStrategies_py/trade_strategies/历史数据/002439-启明星辰-历史数据20110101～20250509.csv'
+START_DATE = '2025-04-11'
+END_DATE = '2025-05-09'
+FILE_PATH = '/Users/apple/Downloads/600993-历史数据.csv'
 # 跌买涨卖相关参数
-FALL_THRESHOLD = -0.02  # 单日跌幅阈值（-1%）
-RISE_THRESHOLD = 0.01  # 卖出上涨阈值（3%）
-POSITION_FRACTION = 0.6  # 买入仓位比例（60%）
+FALL_THRESHOLD = -0.01  # 单日跌幅阈值（-1%）
+RISE_THRESHOLD = 0.03  # 卖出上涨阈值（3%）
+POSITION_FRACTION = 0.5  # 买入仓位比例（60%）
 # 动态补仓相关参数
 INITIAL_POSITION_FRACTION = 0.5  # 动态满仓起始买入比例（50%）
-PRICE_DROP_THRESHOLDS = [0.03, 0.06, 0.09, 0.12]  # 价格下跌阈值（3%, 6%, 9%, 12%）
-PROPORTIONALITY_CONSTANT = 3  # 补仓比例常数 M = k * N
+PRICE_DROP_THRESHOLDS = [0.02, 0.03, 0.09, 0.12]  # 价格下跌阈值（3%, 6%, 9%, 12%）
+PROPORTIONALITY_CONSTANT = 10  # 补仓比例常数 M = k * N
 
 # 策略基类
 class TradingStrategy(ABC):
@@ -244,7 +244,7 @@ class ThresholdTradingStrategyV2(TradingStrategy):
                         f"卖出 {shares} 股，挂单价格 {sell_trigger_price:.2f}，"
                         f"{deal_way} {sell_price:.2f}，手续费 {sell_fee:.2f}，"
                         f"净交易收益 {transaction_profit:.2f}，"
-                        f"对应买入：{buy_date.strftime('%Y-%m-%d')} ({shares}股, 持有{days_held}天, 买入价{buy_price:.2f}, 毛收益+{gross_profit:.2f})"
+                        f"\n对应买入：{buy_date.strftime('%Y-%m-%d')} ({shares}股, 持有{days_held}天, 买入价{buy_price:.2f}, 毛收益+{gross_profit:.2f})"
                     )
                     sell_signals.append((df['日期'][i], sell_price, shares, profit, sell_fee, transaction_profit,
                                          buy_positions_sold))
@@ -265,7 +265,7 @@ class ThresholdTradingStrategyV2(TradingStrategy):
             cumulative_return.append((portfolio_value / initial_capital - 1) * 100)
             daily_positions.append((total_shares, stock_value, capital))
             log.append(
-                f"日期: ({low_price:.2f}~{high_price:.2f})({max_fall*100:.2f}%~{max_rise*100:.2f}%){date}, 操作: {action}, 持股数: {total_shares}, "
+                f"日期: {date}, 操作: {action}, 股价波动({low_price:.2f}~{high_price:.2f})，日涨跌幅({max_fall*100:.2f}%~{max_rise*100:.2f}%)，持股数: {total_shares}, "
                 f"股票市值: {stock_value:.2f}, 闲置资金: {capital:.2f}, "
                 f"累计收益: {profit:.2f}, 累计收益率: {cumulative_return[-1]:.2f}%, "
             )
@@ -330,6 +330,9 @@ class DynamicBuyAndHoldStrategy(TradingStrategy):
             cumulative_return.append(return_pct)
             daily_positions.append((shares, shares * close_price, capital))
 
+            # 计算相对于建仓股价的涨跌幅
+            price_change_pct = ((close_price - initial_price) / initial_price) * 100
+
             # 检查补仓
             price_drop = (initial_price - close_price) / initial_price
             action = '持有'
@@ -338,9 +341,9 @@ class DynamicBuyAndHoldStrategy(TradingStrategy):
                     m = self.proportionality_constant * n
                     capital_to_use = initial_capital * m
                     shares_to_buy = (capital_to_use // (close_price * share_lot)) * share_lot
+                    transaction_value = shares_to_buy * close_price
+                    buy_fee = math.floor(transaction_value / 10000) * self.fee_per_10000
                     if shares_to_buy > 0:
-                        transaction_value = shares_to_buy * close_price
-                        buy_fee = math.floor(transaction_value / 10000) * self.fee_per_10000
                         if capital >= (transaction_value + buy_fee):
                             capital -= (transaction_value + buy_fee)
                             shares += shares_to_buy
@@ -348,8 +351,11 @@ class DynamicBuyAndHoldStrategy(TradingStrategy):
                             action = f"补仓 {shares_to_buy} 股，价格 {close_price:.2f}，下跌 {price_drop * 100:.2f}%，补仓比例 {m * 100:.2f}%，手续费 {buy_fee:.2f}"
                             buy_signals.append((df['日期'][i], close_price, shares_to_buy, profit, buy_fee))
                             key_points.append((date, '补仓', portfolio_value, profit, buy_fee, None, None))
-
-            log.append(f"日期: {date}, 操作: {action}, 持股数: {shares}, 股票市值: {shares * close_price:.2f}, "
+                        else:
+                            action = f"无法补仓：下跌 {price_drop * 100:.2f}%，需资金 {transaction_value + buy_fee:.2f}，剩余资金 {capital:.2f}"
+                    else:
+                        action = f"无法补仓：下跌 {price_drop * 100:.2f}%，资金 {capital_to_use:.2f} 不足以购买整手（每手 {close_price * share_lot:.2f}）"
+            log.append(f"日期: {date}, 操作: {action}, 收盘价:{close_price}，建仓涨跌幅: {price_change_pct:.2f}%，持股数: {shares}, 股票市值: {shares * close_price:.2f}, "
                        f"闲置资金: {capital:.2f}, 累计收益: {profit:.2f}, 累计收益率: {return_pct:.2f}%")
 
         return {
@@ -402,7 +408,7 @@ def generate_interactive_html(df, strategies_results, output_path, start_date, e
         },
         '跌买涨卖(挂单)': {
             'buy_color': 'black', 'sell_color': 'blue', 'line_color': 'orange',
-            'buy_symbol': 'line-ew', 'sell_symbol': 'line-ew'
+            'buy_symbol': 'line-ew', 'sell_symbol': 'circle-dot'
         },
         '动态补仓': {
             'buy_color': 'cyan', 'sell_color': 'magenta', 'line_color': 'pink',
@@ -563,9 +569,9 @@ def main():
 
         # 配置哪些策略启用
         enabled_strategies = {
-            '跌买涨卖(挂单)': True,
+            '跌买涨卖(挂单)': False,
             '跌买涨卖': False,
-            '动态补仓': False
+            '动态补仓': True
         }
 
         # 执行启用的策略
