@@ -12,11 +12,11 @@ INITIAL_CAPITAL = 30000  # 初始资金（人民币）
 SHARE_LOT = 100  # 每次交易股数为100的倍数
 FEE_PER_10000 = 1  # 每10000元交易额收取1元交易费
 START_DATE = '2025-04-01'
-END_DATE = '2025-04-25'
-FILE_PATH = '/Users/apple/Desktop/MyClass/投资策略模拟/600161-天坛生物-历史数据20100101～20250510.csv'
+END_DATE = '2025-05-07'
+FILE_PATH = '/Users/apple/Desktop/MyProject/TradeStrategies_py/trade_strategies/历史数据/002439-启明星辰-历史数据20110101～20250509.csv'
 # 跌买涨卖相关参数
-FALL_THRESHOLD = -0.025  # 单日跌幅阈值（-1%）
-RISE_THRESHOLD = 0.03  # 卖出上涨阈值（3%）
+FALL_THRESHOLD = -0.02  # 单日跌幅阈值（-1%）
+RISE_THRESHOLD = 0.01  # 卖出上涨阈值（3%）
 POSITION_FRACTION = 0.6  # 买入仓位比例（60%）
 # 动态补仓相关参数
 INITIAL_POSITION_FRACTION = 0.5  # 动态满仓起始买入比例（50%）
@@ -157,7 +157,6 @@ class ThresholdTradingStrategy(TradingStrategy):
             'daily_positions': daily_positions,
             'log': log
         }
-
 # 跌买涨卖(挂单)
 class ThresholdTradingStrategyV2(TradingStrategy):
     def __init__(self, fall_threshold: float, rise_threshold: float, position_fraction: float, fee_per_10000: float):
@@ -219,41 +218,45 @@ class ThresholdTradingStrategyV2(TradingStrategy):
                     buy_signals.append((df['日期'][i], buy_price, shares_to_buy, profit, fee))
                     key_points.append((date, '买入', portfolio_value, profit, fee, None, None))
 
-            # 规则2：检查持仓是否达到上涨阈值，挂单卖出（禁止同日卖出）
-            shares_to_sell = 0
-            buy_positions_sold = []
-            transaction_profit = 0
+            # 规则2：检查每个持仓是否达到上涨阈值，挂单卖出（禁止同日卖出）
             new_positions = []
+            sell_actions = []
             for pos in positions:
                 buy_date, buy_price, shares, buy_fee = pos
                 sell_trigger_price = buy_price * (1 + self.rise_threshold)  # 挂单卖出价格
                 if high_price >= sell_trigger_price and df['日期'][i] != buy_date:  # 当日最高价达到或超过挂单价
-                    sell_price = min(sell_trigger_price, high_price)  # 以挂单价或最高价中较小者成交
-                    shares_to_sell += shares
+                    sell_price = min(sell_trigger_price, high_price)  # 挂单价或最高价中较小者
+                    deal_way = "成交价格"
+                    if sell_price < open_price:  # 挂单如果比开盘还低，则以开盘价直接成交
+                        sell_price = open_price
+                        deal_way = "开盘价成交"
+
                     days_held = (df['日期'][i] - buy_date).days
                     gross_profit = (sell_price - buy_price) * shares
-                    position_profit = gross_profit - buy_fee
-                    transaction_profit += position_profit
-                    buy_positions_sold.append((buy_date, shares, days_held, buy_price, buy_fee, gross_profit))
+                    transaction_value = shares * sell_price
+                    sell_fee = math.floor(transaction_value / 10000) * self.fee_per_10000
+                    transaction_profit = gross_profit - buy_fee - sell_fee
+                    capital += (transaction_value - sell_fee)
+
+                    # 记录卖出操作
+                    buy_positions_sold = [(buy_date, shares, days_held, buy_price, buy_fee, gross_profit)]
+                    sell_actions.append(
+                        f"卖出 {shares} 股，挂单价格 {sell_trigger_price:.2f}，"
+                        f"{deal_way} {sell_price:.2f}，手续费 {sell_fee:.2f}，"
+                        f"净交易收益 {transaction_profit:.2f}，"
+                        f"对应买入：{buy_date.strftime('%Y-%m-%d')} ({shares}股, 持有{days_held}天, 买入价{buy_price:.2f}, 毛收益+{gross_profit:.2f})"
+                    )
+                    sell_signals.append((df['日期'][i], sell_price, shares, profit, sell_fee, transaction_profit,
+                                         buy_positions_sold))
+                    key_points.append(
+                        (date, '卖出', portfolio_value, profit, sell_fee, transaction_profit, buy_positions_sold))
                 else:
                     new_positions.append(pos)
             positions = new_positions
 
-            if shares_to_sell > 0:
-                transaction_value = shares_to_sell * sell_price
-                sell_fee = math.floor(transaction_value / 10000) * self.fee_per_10000
-                capital += (transaction_value - sell_fee)
-                transaction_profit -= sell_fee
-                buy_dates_str = ", ".join(
-                    [f"{bd.strftime('%Y-%m-%d')} ({s}股, 持有{dh}天, 买入价{bp:.2f}, 毛收益+{gp:.2f})"
-                     for bd, s, dh, bp, bf, gp in buy_positions_sold])
-                action = (f"卖出 {shares_to_sell} 股，挂单价格 {sell_trigger_price:.2f}，"
-                          f"成交价格 {sell_price:.2f}，手续费 {sell_fee:.2f}，"
-                          f"净交易收益 {transaction_profit:.2f}，对应买入：[{buy_dates_str}]")
-                sell_signals.append((df['日期'][i], sell_price, shares_to_sell, profit, sell_fee, transaction_profit,
-                                     buy_positions_sold))
-                key_points.append(
-                    (date, '卖出', portfolio_value, profit, sell_fee, transaction_profit, buy_positions_sold))
+            # 更新 action，如果有卖出操作则合并
+            if sell_actions:
+                action = "; ".join(sell_actions)
 
             # 更新持仓信息
             total_shares = sum(pos[2] for pos in positions)
@@ -358,9 +361,13 @@ class DynamicBuyAndHoldStrategy(TradingStrategy):
             'log': log
         }
 
-# 可视化函数
+
 def generate_interactive_html(df, strategies_results, output_path, start_date, end_date, stock_code, stock_name):
     fig = go.Figure()
+
+    # 计算价格范围和偏移量
+    price_range = df['高'].max() - df['低'].min()
+    offset = price_range * 0.0005  # 0.05% of price range
 
     # 添加 K 线图
     fig.add_trace(go.Candlestick(
@@ -381,7 +388,7 @@ def generate_interactive_html(df, strategies_results, output_path, start_date, e
         x=df['日期'],
         y=df['高'],
         mode='none',
-        marker=dict(size=0),  # 隐藏标记
+        marker=dict(size=0),
         hovertext=[f"涨跌幅: {mf * 100:.2f}% ~ {mr * 100:.2f}%" for mf, mr in zip(max_fall, max_rise)],
         hoverinfo='text',
         showlegend=False
@@ -391,16 +398,26 @@ def generate_interactive_html(df, strategies_results, output_path, start_date, e
     strategy_styles = {
         '跌买涨卖': {
             'buy_color': 'red', 'sell_color': 'green', 'line_color': 'blue',
-            'buy_symbol': 'triangle-up', 'sell_symbol': 'triangle-down'
+            'buy_symbol': 'line-ew', 'sell_symbol': 'line-ew'
         },
         '跌买涨卖(挂单)': {
             'buy_color': 'black', 'sell_color': 'blue', 'line_color': 'orange',
-            'buy_symbol': 'circle', 'sell_symbol': 'circle'
+            'buy_symbol': 'line-ew', 'sell_symbol': 'line-ew'
         },
         '动态补仓': {
             'buy_color': 'cyan', 'sell_color': 'magenta', 'line_color': 'pink',
-            'buy_symbol': 'square', 'sell_symbol': 'square'
+            'buy_symbol': 'line-ew', 'sell_symbol': 'line-ew'
         }
+        # 可用的 Plotly 标记符号 (symbol)：
+        # 点状：circle, square, diamond, cross, x, pentagon, hexagram, star, hourglass, bowtie
+        #      circle-open, square-open, diamond-open, cross-open, x-open, etc. (带 -open 为镂空)
+        # 线状：line-ns (垂直线), line-ew (水平线), line-ne (右上斜线), line-nw (左上斜线)
+        # 箭头：triangle-up, triangle-down, triangle-left, triangle-right
+        #      triangle-ne, triangle-nw, triangle-se, triangle-sw
+        #      arrow-up, arrow-down, arrow-left, arrow-right
+        # 其他：y-up, y-down, asterisk, hash, cross-thin, x-thin
+        # 变体：添加 -open (镂空), -dot (中心点), -open-dot (镂空带中心点)
+        # 例如：circle, circle-open, circle-dot, circle-open-dot
     }
 
     # 为每个策略添加信号和收益率曲线
@@ -408,38 +425,65 @@ def generate_interactive_html(df, strategies_results, output_path, start_date, e
     for strategy_name, results in strategies_results.items():
         style = strategy_styles.get(strategy_name, {
             'buy_color': 'black', 'sell_color': 'black', 'line_color': 'black',
-            'buy_symbol': 'circle', 'sell_symbol': 'circle'
+            'buy_symbol': 'line-ew', 'sell_symbol': 'line-ew'
         })
+
+        # 调试：打印 sell_signals
+        print(f"{strategy_name} sell_signals:", results['sell_signals'])
 
         # 买入信号
         if results['buy_signals']:
             buy_dates, buy_prices, buy_shares, _, _ = zip(*results['buy_signals'])
             fig.add_trace(go.Scatter(
                 x=buy_dates,
-                y=buy_prices,
+                y=[max(p, df['低'].min() * 0.99) for p in buy_prices],  # 限制下限
                 mode='markers+text',
-                marker=dict(size=10, color=style['buy_color'], symbol=style['buy_symbol']),
-                text=[f'{strategy_name} 买入 {s}股 @ {p:.2f}' for s, p in zip(buy_shares, buy_prices)],
+                marker=dict(
+                    size=15,
+                    color=style['buy_color'],
+                    symbol=style['buy_symbol'],
+                    line=dict(width=2)
+                ),
+                text=[f'买{s}股 @ {p:.2f}' for s, p in zip(buy_shares, buy_prices)],
                 textposition='bottom center',
-                name=f'{strategy_name} 买入'
+                hoverinfo='text',
+                hovertext=[f'{strategy_name} 买{s}股 @ {p:.2f}' for s, p in zip(buy_shares, buy_prices)],
+                name=f'{strategy_name} 买'
             ))
 
-        # 卖出信号
+        # 卖出信号（逐个绘制，避免同一天覆盖）
         if results['sell_signals']:
-            sell_dates, sell_prices, sell_shares, _, _, transaction_profits, buy_positions_sold = zip(
-                *results['sell_signals'])
-            fig.add_trace(go.Scatter(
-                x=sell_dates,
-                y=sell_prices,
-                mode='markers+text',
-                marker=dict(size=10, color=style['sell_color'], symbol=style['sell_symbol']),
-                text=[f'{strategy_name} 卖出 {s}股 @ {p:.2f}<br>净收益: {tp:.2f}<br>' + '<br>'.join(
-                    [f'{bd.strftime("%Y-%m-%d")} 买({bs}股, 持{dh}天, 价{bp:.2f}, +{gp:.2f})'
-                     for bd, bs, dh, bp, bf, gp in bps])
-                      for s, p, tp, bps in zip(sell_shares, sell_prices, transaction_profits, buy_positions_sold)],
-                textposition='top center',
-                name=f'{strategy_name} 卖出'
-            ))
+            for idx, (sell_date, sell_price, sell_shares, profit, sell_fee, transaction_profit, buy_positions_sold) in enumerate(results['sell_signals']):
+                y_pos = min(sell_price + idx * offset, df['高'].max() * 1.01)  # 限制上限
+                y_pos = max(y_pos, df['低'].min() * 0.99)  # 限制下限
+                text = (
+                    f'卖{sell_shares}股+{transaction_profit:.2f} @{sell_price:.2f}<br>'
+                )
+                hover_text = (
+                    f'{strategy_name} 卖出 {sell_shares}股 @ {sell_price:.2f}<br>'
+                    f'净收益: {transaction_profit:.2f}<br>' +
+                    '<br>'.join([
+                        f'{bd.strftime("%Y-%m-%d")} 买({bs}股, 持{dh}天, 价{bp:.2f}, +{gp:.2f})'
+                        for bd, bs, dh, bp, bf, gp in buy_positions_sold
+                    ])
+                )
+                fig.add_trace(go.Scatter(
+                    x=[sell_date],
+                    y=[y_pos],
+                    mode='markers+text',
+                    marker=dict(
+                        size=15,
+                        color=style['sell_color'],
+                        symbol=style['sell_symbol'],
+                        line=dict(width=2)
+                    ),
+                    text=[text],
+                    textposition='top center',
+                    hoverinfo='text',
+                    hovertext=[hover_text],
+                    name=f'{strategy_name} 卖 #{idx+1}' if idx > 0 else f'{strategy_name} 卖',
+                    showlegend=(idx == 0)
+                ))
 
         # 收益率曲线
         fig.add_trace(go.Scatter(
@@ -457,8 +501,18 @@ def generate_interactive_html(df, strategies_results, output_path, start_date, e
     # 更新布局
     fig.update_layout(
         title='<br>'.join(title_parts),
-        yaxis=dict(title='价格 (人民币)', side='left', showgrid=False),
-        yaxis2=dict(title='累计收益率 (%)', side='right', overlaying='y', showgrid=False),
+        yaxis=dict(
+            title='价格 (人民币)',
+            side='left',
+            showgrid=False,
+            range=[df['低'].min() * 0.99, df['高'].max() * 1.01]  # 扩展 y 轴范围
+        ),
+        yaxis2=dict(
+            title='累计收益率 (%)',
+            side='right',
+            overlaying='y',
+            showgrid=False
+        ),
         xaxis_rangeslider_visible=True,
         showlegend=True,
         hovermode='x unified',
