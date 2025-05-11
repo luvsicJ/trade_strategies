@@ -24,7 +24,6 @@
 # 3.1若本次交易失败，则尝试在大跌次日到指定日期区间最后一天以每日收盘价尝试卖出（当日收盘价>买入时的股价）若到最后都无法卖出，{sell_detail}为：无法卖出，{a}元/股成本价过高，目前亏损：{基于指定日期最后一天的股价算出亏损}；若成功卖出，则{sell_detail}为：在yyyy-mm-dd日以@{d}元/股卖出，+{d-a}*100元
 # 最终根据每笔交易的盈亏算出总盈亏，根据未完成的交易统计出当前持有股数，以及每股的平均成本
 #可修改的遍历放在全局变量中 方便我修改  中文回答问题，代码的注释和图表的内容说明都要用中文， 文件生成后自动用浏览器打开
-
 # -*- coding: utf-8 -*-
 import numpy as np
 import pandas as pd
@@ -36,9 +35,9 @@ import webbrowser
 # 全局可修改参数
 START_DATE = '2024-01-01'  # 日期区间起始
 END_DATE = '2024-12-31'    # 日期区间结束
-FALL_THRESHOLD = -0.015     # 大跌阈值（%）
-SELL_PROFIT_RATE = 0.02    # 卖出目标盈利比例（%）
-HISTOGRAM_INTERVAL = 0.01 # 直方图涨跌幅区间间隔（%）
+FALL_THRESHOLD = -0.025     # 大跌阈值（-1.5%）
+SELL_PROFIT_RATE = 0.01    # 卖出目标盈利比例（2%）
+HISTOGRAM_INTERVAL = 0.01  # 直方图涨跌幅区间间隔（1%）
 TRANSACTION_FEE = 5.0      # 每笔交易手续费（元）
 SHARES_PER_TRADE = 500     # 每次交易股数
 
@@ -199,8 +198,19 @@ def simulate_trading(df, start_date, end_date, sell_profit_rate, transaction_fee
     total_profit = 0
     holding_shares = 0
     total_cost = 0
+    total_invested = 0  # 统计总充值金额（总成本）
+    success_invested = 0  # 统计成功交易的买入成本
+    account_balance = 0  # 账户余额，初始为0
     trade_logs = []
     big_fall_days_info = []
+
+    # 新增统计变量
+    total_trades = 0
+    pending_success_trades = 0
+    later_success_trades = 0
+    trapped_trades = 0
+    success_profits = 0
+    trapped_losses = []
 
     for i in range(len(df) - 1):
         today = df.iloc[i]
@@ -210,8 +220,19 @@ def simulate_trading(df, start_date, end_date, sell_profit_rate, transaction_fee
         if yesterday['涨跌幅'].strip('%').replace(',', '') != '':
             yesterday_change = float(yesterday['涨跌幅'].strip('%').replace(',', '')) / 100
             if yesterday_change <= FALL_THRESHOLD:
+                total_trades += 1
                 buy_price = yesterday['收盘']
+                buy_cost = buy_price * shares_per_trade
                 sell_target_price = buy_price * (1 + sell_profit_rate)
+
+                # 检查账户余额是否足够，若不足则充值
+                if account_balance < buy_cost:
+                    recharge_amount = buy_cost - account_balance
+                    total_invested += recharge_amount
+                    account_balance += recharge_amount
+
+                # 扣除买入成本
+                account_balance -= buy_cost
 
                 # 计算次日最大涨跌幅（用于K线图标注）
                 max_fall = (today['低'] - buy_price) / buy_price
@@ -219,51 +240,90 @@ def simulate_trading(df, start_date, end_date, sell_profit_rate, transaction_fee
                 big_fall_days_info.append((today['日期'], yesterday_change, max_fall, max_rise))
 
                 # 交易逻辑
-                log = f"{yesterday['日期'].strftime('%Y-%m-%d')}日(涨跌幅:{yesterday_change*100:.2f}%)买入{shares_per_trade}股@{buy_price:.2f}，"
-                log += f"在{today['日期'].strftime('%Y-%m-%d')}日尝试以@{sell_target_price:.2f}卖出，"
+                log = f"{yesterday['日期'].strftime('%Y-%m-%d')}日(涨跌幅:{yesterday_change*100:.2f}%)买入{shares_per_trade}股@{buy_price:.2f}元，"
+                log += f"在{today['日期'].strftime('%Y-%m-%d')}日尝试以{sell_target_price:.2f}元卖出，"
 
                 # 情况1：开盘价高于挂单价
                 if today['开盘'] >= sell_target_price:
-                    profit = (today['开盘'] - buy_price) * shares_per_trade - 2 * transaction_fee
+                    sell_price = today['开盘']
+                    revenue = sell_price * shares_per_trade - transaction_fee  # 卖出收入扣除手续费
+                    profit = revenue - buy_cost - transaction_fee  # 总盈利扣除买入和卖出手续费
                     total_profit += profit
-                    log += f"成交结果: 成功，以开盘价@{today['开盘']:.2f}成交，+{profit:.2f}元"
+                    success_profits += profit
+                    success_invested += buy_cost  # 记录成功交易的买入成本
+                    pending_success_trades += 1
+                    account_balance += revenue
+                    log += f"成交结果: 成功，以开盘价@{sell_price:.2f}元成交，盈利+{profit:.2f}元"
 
                 # 情况2：挂单价 <= 当日最高价
                 elif sell_target_price <= today['高']:
-                    profit = (sell_target_price - buy_price) * shares_per_trade - 2 * transaction_fee
+                    sell_price = sell_target_price
+                    revenue = sell_price * shares_per_trade - transaction_fee
+                    profit = revenue - buy_cost - transaction_fee
                     total_profit += profit
-                    log += f"成交结果: 成功，以挂单价@{sell_target_price:.2f}成交，+{profit:.2f}元"
+                    success_profits += profit
+                    success_invested += buy_cost  # 记录成功交易的买入成本
+                    pending_success_trades += 1
+                    account_balance += revenue
+                    log += f"成交结果: 成功，以挂单价@{sell_price:.2f}元成交，盈利+{profit:.2f}元"
 
                 # 情况3：挂单价 > 当日最高价，尝试后续卖出
                 else:
                     holding_shares += shares_per_trade
-                    total_cost += buy_price * shares_per_trade
+                    total_cost += buy_cost
                     sell_detail = ""
 
                     # 尝试在后续日期卖出
                     for j in range(i - 1, -1, -1):
                         future_day = df.iloc[j]
                         if future_day['收盘'] > buy_price:
-                            profit = (future_day['收盘'] - buy_price) * shares_per_trade - 2 * transaction_fee
+                            sell_price = future_day['收盘']
+                            revenue = sell_price * shares_per_trade - transaction_fee
+                            profit = revenue - buy_cost - transaction_fee
                             total_profit += profit
+                            success_profits += profit
+                            success_invested += buy_cost  # 记录成功交易的买入成本
                             holding_shares -= shares_per_trade
-                            total_cost -= buy_price * shares_per_trade
-                            sell_detail = f"在{future_day['日期'].strftime('%Y-%m-%d')}日以@{future_day['收盘']:.2f}卖出，+{profit:.2f}元"
+                            total_cost -= buy_cost
+                            later_success_trades += 1
+                            account_balance += revenue
+                            sell_detail = f"在{future_day['日期'].strftime('%Y-%m-%d')}日以@{sell_price:.2f}元卖出，盈利+{profit:.2f}元"
                             break
                     else:
-                        # 若无法卖出，计算截至最后一天的亏损
+                        # 若无法卖出，记录亏损
                         last_price = df.iloc[0]['收盘']
                         loss = (last_price - buy_price) * shares_per_trade
-                        sell_detail = f"无法卖出，@{buy_price:.2f}成本价过高，目前股价@{last_price} 这笔交易亏损：{loss:.2f}元"
+                        trapped_trades += 1
+                        trapped_losses.append({
+                            'date': yesterday['日期'].strftime('%Y-%m-%d'),
+                            'buy_price': buy_price,
+                            'shares': shares_per_trade,
+                            'loss': loss,
+                            'current_price': last_price
+                        })
+                        sell_detail = f"无法卖出，@{buy_price:.2f}元成本价过高，目前股价@{last_price:.2f}元，这笔交易亏损：{loss:.2f}元"
 
-                    log += f"成交结果: 失败，无法以挂单价@{sell_target_price:.2f}成交，当日股票最高价为@{today['高']:.2f}\n>>>>>尝试在以后卖出:{sell_detail}"
+                    log += f"成交结果: 失败，无法以挂单价@{sell_target_price:.2f}元成交，当日股票最高价为@{today['高']:.2f}元\n>>>>>尝试在以后卖出:{sell_detail}"
 
                 trade_logs.append(log)
 
     # 计算平均持股成本
     avg_cost = total_cost / holding_shares if holding_shares > 0 else 0
 
-    return trade_logs, total_profit, holding_shares, avg_cost, big_fall_days_info
+    # 计算被套交易的总亏损
+    trapped_loss_total = sum(loss['loss'] for loss in trapped_losses)
+
+    # 修正总盈亏
+    total_profit = success_profits + trapped_loss_total  # 亏损为负值，累加即减去
+
+    # 计算收益率
+    success_roi = (success_profits / total_invested * 100) if success_invested > 0 else 0
+    total_roi = (total_profit / total_invested * 100) if total_invested > 0 else 0
+
+    return (trade_logs, total_profit, holding_shares, avg_cost, big_fall_days_info,
+            total_trades, pending_success_trades, later_success_trades, trapped_trades,
+            success_profits, trapped_losses, total_invested, success_roi, total_roi,
+            success_invested, trapped_loss_total)
 
 def main():
     # 读取数据
@@ -277,7 +337,10 @@ def main():
     histogram_path = plot_histogram(big_fall_days, histogram_data, date_lists)
 
     # 模拟交易
-    trade_logs, total_profit, holding_shares, avg_cost, big_fall_days_info = simulate_trading(
+    (trade_logs, total_profit, holding_shares, avg_cost, big_fall_days_info,
+     total_trades, pending_success_trades, later_success_trades, trapped_trades,
+     success_profits, trapped_losses, total_invested, success_roi, total_roi,
+     success_invested, trapped_loss_total) = simulate_trading(
         df, START_DATE, END_DATE, SELL_PROFIT_RATE, TRANSACTION_FEE, SHARES_PER_TRADE
     )
 
@@ -285,12 +348,33 @@ def main():
     candlestick_path = plot_candlestick(df, START_DATE, END_DATE, big_fall_days_info)
 
     # 输出交易结果
-    print(f"\n交易模拟结果：")
+    print(f"\n=== 交易模拟结果 ===")
     for log in trade_logs:
         print(log)
-    print(f"\n总盈亏：{total_profit:.2f}元")
-    print(f"当前持有股数：{holding_shares}股")
-    print(f"每股平均成本：{avg_cost:.2f}元" if holding_shares > 0 else "每股平均成本：0.00元")
+
+    print(f"\n=== 交易统计 ===")
+    print(f"总交易次数：{total_trades} 次")
+    print(f"挂单成功次数：{pending_success_trades} 次")
+    print(f"后续成功卖出次数：{later_success_trades} 次")
+    print(f"交易被套次数：{trapped_trades} 次")
+
+    print(f"\n=== 盈利与亏损详情 ===")
+    print(f"成功交易总盈利：{success_profits:.2f} 元")
+    if trapped_losses:
+        print(f"被套交易详情：")
+        for loss in trapped_losses:
+            print(f"  - {loss['date']}日买入{loss['shares']}股@{loss['buy_price']:.2f}元/股，"
+                  f"截至最后一日股价@{loss['current_price']:.2f}元，亏损{loss['loss']:.2f}元")
+
+    print(f"\n=== 资金与收益率 ===")
+    print(f"成功交易总盈利：{success_profits:.2f} 元")
+    print(f"被套交易总亏损：{trapped_loss_total:.2f} 元")
+    print(f"总投入金额（总充值成本）：{total_invested:.2f} 元")
+    print(f"成功交易收益率：{success_roi:.2f}%")
+    print(f"总收益率（含被套交易）：{total_roi:.2f}%")
+    print(f"总盈亏：{total_profit:.2f} 元")
+    print(f"当前持有股数：{holding_shares} 股")
+    print(f"每股平均成本：{avg_cost:.2f} 元" if holding_shares > 0 else "每股平均成本：0.00 元")
 
     # 自动打开生成的HTML文件
     webbrowser.open('file://' + os.path.abspath(histogram_path))
