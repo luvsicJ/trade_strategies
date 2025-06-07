@@ -1,5 +1,4 @@
 import random
-
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output, State
@@ -7,7 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 # 读取 CSV 文件
-csv_file_path = '/Users/apple/Desktop/MyProject/TradeStrategies_py/trade_strategies/历史数据/601888-中国中免-历史数据20100101～20250510.csv'
+csv_file_path = '/Users/apple/Downloads/688981历史数据.csv'
 df = pd.read_csv(csv_file_path)
 
 # 数据清洗
@@ -22,8 +21,11 @@ df['当前持股'] = 0
 df = df.sort_values('日期').reset_index(drop=True)
 
 # 默认起始日期和结束日期对应的下标
-start_idx = random_value = random.randint(0, 3500)
-end_idx = start_idx + 30
+# start_idx = random.randint(0, 3500)
+# end_idx = start_idx + 30
+
+end_idx = df['日期'].size - 200
+start_idx = end_idx - 30
 ori_money = 100000
 
 # 初始化交易相关变量
@@ -84,20 +86,34 @@ def create_candlestick_chart(data, avg_cost, closing_price):
                 borderwidth=1
             ))
 
-    # 添加平均成本线
-    if avg_cost > 0 and portfolio['shares'] > 0:
-        fig.add_hline(
+    # 修复：使用 add_shape 和 add_annotation 代替 add_hline
+    if avg_cost > 0:  # 只要平均成本大于0就显示
+        # 添加水平线
+        fig.add_shape(
+            type="line",
+            x0=data['日期'].iloc[0],
+            x1=data['日期'].iloc[-1],
+            y0=avg_cost,
+            y1=avg_cost,
+            line=dict(
+                color="#1E88E5",
+                width=3,
+                dash="dash"
+            )
+        )
+
+        # 添加标注
+        fig.add_annotation(
+            x=data['日期'].iloc[-1],
             y=avg_cost,
-            line_dash="dash",
-            line_color="#1E88E5",  # 深蓝色
-            line_width=3,  # 加粗线条
-            annotation_text=f"平均成本: {avg_cost:.2f}元",
-            annotation_position="right",  # 标注在右侧
-            annotation_font=dict(size=14, color="#1E88E5"),
-            annotation_xref="paper",  # 相对于图表宽度
-            annotation_x=1,  # 放在最右侧
-            annotation_yref="data",
-            annotation_y=avg_cost
+            text=f"平均成本: {avg_cost:.2f}元",
+            showarrow=False,
+            font=dict(size=14, color="#1E88E5"),
+            bgcolor='rgba(255, 255, 255, 0.8)',
+            bordercolor='#1E88E5',
+            borderwidth=1,
+            xanchor="left",
+            xshift=10
         )
 
     fig.update_layout(
@@ -132,7 +148,7 @@ app.layout = html.Div([
             }
         ),
         html.Button(
-            "买入N股",
+            "买入",
             id="buy-button",
             n_clicks=0,
             style={
@@ -148,7 +164,7 @@ app.layout = html.Div([
             }
         ),
         html.Button(
-            "卖出N股",
+            "卖出",
             id="sell-button",
             n_clicks=0,
             style={
@@ -183,11 +199,12 @@ app.layout = html.Div([
         'alignItems': 'center',
         'margin': '20px 0'
     }),
-    dcc.Graph(id='k-line-chart', figure=create_candlestick_chart(df.iloc[start_idx:start_idx+1], portfolio['avg_cost'], 0)),
-    html.Div(id="date-range", style={'textAlign': 'center', 'fontSize': 16, 'margin': '10px 0'}),
     html.Div(id="portfolio-info", style={'textAlign': 'center', 'fontSize': 16, 'margin': '10px 0'}),
+    dcc.Graph(id='k-line-chart'),
+    html.Div(id="date-range", style={'textAlign': 'center', 'fontSize': 16, 'margin': '10px 0'}),
     dcc.Store(id='portfolio-store', data=portfolio),
-    dcc.Store(id='df-store', data=df.to_dict('records'))
+    dcc.Store(id='df-store', data=df.to_dict('records')),
+    dcc.Store(id='current-end-idx', data=end_idx)
 ])
 
 # 回调函数：更新图表、日期范围、投资组合信息和数据存储
@@ -197,7 +214,8 @@ app.layout = html.Div([
         Output('date-range', 'children'),
         Output('portfolio-info', 'children'),
         Output('portfolio-store', 'data'),
-        Output('df-store', 'data')
+        Output('df-store', 'data'),
+        Output('current-end-idx', 'data')
     ],
     [
         Input('next-day-button', 'n_clicks'),
@@ -207,21 +225,28 @@ app.layout = html.Div([
     [
         State('shares-input', 'value'),
         State('portfolio-store', 'data'),
-        State('df-store', 'data')
+        State('df-store', 'data'),
+        State('current-end-idx', 'data')
     ]
 )
-def update_dashboard(next_clicks, buy_clicks, sell_clicks, shares_input, portfolio_data, df_data):
+def update_dashboard(next_clicks, buy_clicks, sell_clicks, shares_input, portfolio_data, df_data, current_end_idx):
     df_temp = pd.DataFrame(df_data)
     df_temp['日期'] = pd.to_datetime(df_temp['日期'], errors='coerce')
     portfolio = portfolio_data.copy()
 
-    current_end_idx = end_idx + next_clicks + 1
+    # 更新当前结束下标
+    trigger = dash.callback_context.triggered[0]['prop_id'].split('.')[0]
+    if trigger == 'next-day-button':
+        current_end_idx += 1
+    elif trigger in ['buy-button', 'sell-button']:
+        # 买卖操作不改变当前日期，只更新数据
+        pass
+
     if current_end_idx > len(df_temp):
         current_end_idx = len(df_temp)
+
     data_to_show = df_temp.iloc[start_idx:current_end_idx]
     closing_price = df_temp.iloc[current_end_idx - 1]['收盘'] if current_end_idx <= len(df_temp) else 0
-
-    trigger = dash.callback_context.triggered[0]['prop_id'].split('.')[0]
 
     if trigger == 'buy-button' and shares_input:
         cost = closing_price * shares_input
@@ -229,8 +254,11 @@ def update_dashboard(next_clicks, buy_clicks, sell_clicks, shares_input, portfol
             portfolio['shares'] += shares_input
             portfolio['total_cost'] += cost
             portfolio['balance'] -= cost
-            df_temp.loc[current_end_idx - 1, '交易标记'] += f"买入 {shares_input}股 @ {closing_price:.2f}; "
-            df_temp.loc[current_end_idx - 1:, '当前持股'] = portfolio['shares']
+            # 更新交易标记和当前持股
+            current_idx = current_end_idx - 1
+            df_temp.loc[current_idx, '交易标记'] = f"买入 {shares_input}股 @ {closing_price:.2f}"
+            df_temp.loc[current_idx:, '当前持股'] = portfolio['shares']
+            # 计算平均成本
             if portfolio['shares'] > 0:
                 portfolio['avg_cost'] = portfolio['total_cost'] / portfolio['shares']
 
@@ -239,16 +267,21 @@ def update_dashboard(next_clicks, buy_clicks, sell_clicks, shares_input, portfol
             portfolio['shares'] -= shares_input
             portfolio['total_cost'] -= portfolio['avg_cost'] * shares_input
             portfolio['balance'] += closing_price * shares_input
-            df_temp.loc[current_end_idx - 1, '交易标记'] += f"卖出 {shares_input}股 @ {closing_price:.2f}; "
-            df_temp.loc[current_end_idx - 1:, '当前持股'] = portfolio['shares']
+            # 更新交易标记和当前持股
+            current_idx = current_end_idx - 1
+            df_temp.loc[current_idx, '交易标记'] = f"卖出 {shares_input}股 @ {closing_price:.2f}"
+            df_temp.loc[current_idx:, '当前持股'] = portfolio['shares']
+            # 更新平均成本
             if portfolio['shares'] == 0:
                 portfolio['avg_cost'] = 0
                 portfolio['total_cost'] = 0
             elif portfolio['shares'] > 0:
                 portfolio['avg_cost'] = portfolio['total_cost'] / portfolio['shares']
 
+    # 更新投资组合价值
     portfolio['portfolio_value'] = portfolio['shares'] * closing_price
 
+    # 创建图表 - 直接使用portfolio['avg_cost']
     figure = create_candlestick_chart(data_to_show, portfolio['avg_cost'], closing_price)
 
     date_range_display = (
@@ -256,17 +289,21 @@ def update_dashboard(next_clicks, buy_clicks, sell_clicks, shares_input, portfol
         f"{data_to_show['日期'].iloc[-1].strftime('%Y-%m-%d') if pd.notnull(data_to_show['日期'].iloc[-1]) else '未知'}"
     )
 
+    # 计算盈亏百分比
+    total_value = portfolio['balance'] + portfolio['portfolio_value']
+    profit = total_value - portfolio['ori']
+    profit_percentage = (profit / portfolio['ori']) * 100 if portfolio['ori'] > 0 else 0
+
     portfolio_info = (
         f"持股数: {portfolio['shares']}股 | "
+        f"平均成本: {portfolio['avg_cost']:.2f}元 | "
+        f"盈亏金额: {profit:.2f}元 ({profit_percentage:.2f}%) | "
         f"证券价值: {portfolio['portfolio_value']:.2f}元 | "
-        f"账户余额: {portfolio['balance']:.2f}元 | "
-        f"盈亏金额: {(portfolio['balance'] + portfolio['portfolio_value'] - portfolio['ori']):.2f}元 "
-        f"{((portfolio['balance'] + portfolio['portfolio_value'] - portfolio['ori'])/ (portfolio['balance'] + portfolio['portfolio_value'] )):.2f}%| "
-        f"平均成本: {portfolio['avg_cost']:.2f}元"
+        f"账户余额: {portfolio['balance']:.2f}元"
     )
 
-    return figure, date_range_display, portfolio_info, portfolio, df_temp.to_dict('records')
+    return figure, date_range_display, portfolio_info, portfolio, df_temp.to_dict('records'), current_end_idx
 
 # 运行 Dash 应用
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=8051)
