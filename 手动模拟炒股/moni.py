@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 # 读取 CSV 文件
-csv_file_path = '/Users/apple/Downloads/688981历史数据.csv'
+csv_file_path = '/Users/apple/Desktop/MyProject/TradeStrategies_py/trade_strategies/历史数据/601888-中国中免-历史数据20100101～20250510.csv'
 df = pd.read_csv(csv_file_path)
 
 # 数据清洗
@@ -21,11 +21,11 @@ df['当前持股'] = 0
 df = df.sort_values('日期').reset_index(drop=True)
 
 # 默认起始日期和结束日期对应的下标
-# start_idx = random.randint(0, 3500)
-# end_idx = start_idx + 30
+start_idx = random.randint(0, 1000)
+end_idx = start_idx + 90
 
-end_idx = df['日期'].size - 200
-start_idx = end_idx - 30
+# end_idx = df['日期'].size - 200
+# start_idx = end_idx - 90
 ori_money = 100000
 
 # 初始化交易相关变量
@@ -53,15 +53,10 @@ def create_candlestick_chart(data, avg_cost, closing_price):
         decreasing_line_color='green',
         hovertext=data.apply(lambda row: (
             f"日期: {row['日期'].strftime('%Y-%m-%d') if pd.notnull(row['日期']) else '未知'}<br>"
-            f"开盘价: {row['开盘']:.2f}<br>"
             f"收盘价: {row['收盘']:.2f}<br>"
-            f"最高价: {row['高']:.2f}<br>"
-            f"最低价: {row['低']:.2f}<br>"
             f"涨跌金额: {(row['收盘'] - row['开盘']):.2f}<br>"
             f"涨跌幅: {row['涨跌幅']:.2f}%<br>"
             f"交易: {row['交易标记'] if row['交易标记'] else '无'}<br>"
-            f"当前持股: {int(row['当前持股'])}股<br>"
-            f"平均成本: {avg_cost:.2f}元<br>"
             f"股价与成本差: {(row['收盘'] - avg_cost):.2f}元"
         ), axis=1),
         hoverinfo="text"
@@ -86,9 +81,8 @@ def create_candlestick_chart(data, avg_cost, closing_price):
                 borderwidth=1
             ))
 
-    # 修复：使用 add_shape 和 add_annotation 代替 add_hline
-    if avg_cost > 0:  # 只要平均成本大于0就显示
-        # 添加水平线
+    # 添加平均成本线和标注
+    if avg_cost > 0:
         fig.add_shape(
             type="line",
             x0=data['日期'].iloc[0],
@@ -101,8 +95,6 @@ def create_candlestick_chart(data, avg_cost, closing_price):
                 dash="dash"
             )
         )
-
-        # 添加标注
         fig.add_annotation(
             x=data['日期'].iloc[-1],
             y=avg_cost,
@@ -116,8 +108,30 @@ def create_candlestick_chart(data, avg_cost, closing_price):
             xshift=10
         )
 
+    # 获取当日的价格、涨跌幅、涨跌金额
+    last_row = data.iloc[-1]
+    current_date = last_row['日期'].strftime('%Y-%m-%d') if pd.notnull(last_row['日期']) else '未知'
+    closing_price = last_row['收盘']
+    price_change = last_row['收盘'] - last_row['开盘']
+    percentage_change = last_row['涨跌幅']
+
+    # 更新标题，包含当日的价格、涨跌幅和涨跌金额
+    title_text = (
+        f"当日情况 | "
+        f"收盘价: {closing_price:.2f}元 | "
+        f"涨跌金额: {price_change:.2f}元 | "
+        f"涨跌幅: {percentage_change:.2f}%"
+    )
+
     fig.update_layout(
-        title='K线图',
+        title=dict(
+            text=title_text,
+            x=0.5,
+            xanchor='center',
+            y=0.95,
+            yanchor='top',
+            font=dict(size=16)
+        ),
         xaxis_title='日期',
         yaxis_title='价格',
         xaxis_rangeslider_visible=False,
@@ -127,7 +141,6 @@ def create_candlestick_chart(data, avg_cost, closing_price):
     )
 
     return fig
-
 # 应用布局
 app.layout = html.Div([
     # 按钮和输入框区域
