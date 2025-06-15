@@ -20,7 +20,12 @@ pctChg_sum_N = 3
 持仓股数 = 0
 账户余额 = 初始资金
 平均买入成本线 = 0
-current_idx = None
+
+# 指定日期区间
+current_date = '2021-06-11'
+date_mask =  (df['date'] <= current_date)
+filtered_df = df[date_mask]
+current_idx = filtered_df.index[-1] if not filtered_df.empty else -1
 
 def calculate_kdj(df, n=9, m1=3, m2=3, prefix=''):
     low_list = df['low'].rolling(n, min_periods=1).min()
@@ -78,24 +83,16 @@ def init_all_j_values(df):
     df = df.merge(monthly_merged[['date', 'monthly_J']], on='date', how='left')
     return df
 
-
 # 初始化df J 值
 df = init_all_j_values(df)
-
-# 指定日期区间
-start_date = '2021-03-05'
-end_date = '2021-06-11'
-date_mask = (df['date'] >= start_date) & (df['date'] <= end_date)
-filtered_df = df[date_mask]
-start_idx = filtered_df.index[0] if not filtered_df.empty else -1
-end_idx = filtered_df.index[-1] if not filtered_df.empty else -1
 
 # 初始化全局变量
 global_vars = {
     '持仓股数': 持仓股数,
     '账户余额': 账户余额,
     '平均买入成本线': 平均买入成本线,
-    'current_idx': end_idx
+    'current_idx': current_idx,
+    'days_to_show': 30  # 默认显示前30天
 }
 
 def plot_kline_with_deals(df, start_idx, end_idx):
@@ -165,7 +162,6 @@ def plot_kline_with_deals(df, start_idx, end_idx):
                 opacity=0.8
             )
     fig.update_layout(
-        title='K线图与盈亏百分比曲线',
         xaxis=dict(
             title='日期',
             rangeslider=dict(visible=False)
@@ -210,32 +206,16 @@ def plot_kline_with_deals(df, start_idx, end_idx):
 
 # Dash 布局
 app.layout = html.Div([
-    html.H1("股票交易K线图", style={
-        'textAlign': 'center',
-        'marginBottom': '10px',
-        'fontFamily': 'Arial, sans-serif',
-        'color': '#333'
-    }),
+
     html.Div(id='current-kline-info', style={
-        'margin': '20px',
-        'padding': '15px',
+        'margin': '5px',
+        'padding': '5px',
         'border': '1px solid #d3d3d3',
         'borderRadius': '8px',
         'backgroundColor': '#f9f9f9',
         'display': 'flex',
         'justifyContent': 'space-around',
         'flexWrap': 'wrap',
-        'fontSize': '14px',
-        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)',
-        'fontFamily': 'Arial, sans-serif'
-    }),
-    dcc.Graph(id='kline-graph', style={'height': '70vh', 'margin': '20px'}),
-    html.Div(id='account-info', style={
-        'margin': '20px',
-        'padding': '15px',
-        'border': '1px solid #d3d3d3',
-        'borderRadius': '8px',
-        'backgroundColor': '#f9f9f9',
         'fontSize': '14px',
         'boxShadow': '0 2px 4px rgba(0,0,0,0.1)',
         'fontFamily': 'Arial, sans-serif'
@@ -269,6 +249,7 @@ app.layout = html.Div([
             'transition': 'background-color 0.2s'
         }),
         html.Button('下一天', id='next-day-button', n_clicks=0, style={
+            'marginRight': '10px',
             'padding': '8px 16px',
             'borderRadius': '4px',
             'border': 'none',
@@ -277,6 +258,33 @@ app.layout = html.Div([
             'cursor': 'pointer',
             'transition': 'background-color 0.2s'
         }),
+        html.Label("显示前N天:", style={'marginRight': '10px', 'fontSize': '14px'}),
+        dcc.Input(id='days-input', type='number', min=1, value=30, style={
+            'marginRight': '5px',
+            'padding': '5px',
+            'borderRadius': '4px',
+            'border': '1px solid #d3d3d3'
+        }),
+        html.Button('显示前N天数据', id='show-days-button', n_clicks=0, style={
+            'padding': '8px 16px',
+            'borderRadius': '4px',
+            'border': 'none',
+            'backgroundColor': '#6c757d',
+            'color': 'white',
+            'cursor': 'pointer',
+            'transition': 'background-color 0.2s'
+        }),
+    dcc.Graph(id='kline-graph', style={'height': '70vh', 'margin': '20px'}),
+    html.Div(id='account-info', style={
+        'margin': '5px',
+        'padding': '5px',
+        'border': '1px solid #d3d3d3',
+        'borderRadius': '8px',
+        'backgroundColor': '#f9f9f9',
+        'fontSize': '14px',
+        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)',
+        'fontFamily': 'Arial, sans-serif'
+    })
     ], style={'textAlign': 'center', 'marginTop': '20px'}),
 ], style={'maxWidth': '1200px', 'margin': '0 auto', 'padding': '20px'})
 
@@ -289,13 +297,25 @@ app.layout = html.Div([
         Input('buy-button', 'n_clicks'),
         Input('sell-button', 'n_clicks'),
         Input('next-day-button', 'n_clicks'),
-        State('shares-input', 'value')
+        Input('show-days-button', 'n_clicks'),
+        State('shares-input', 'value'),
+        State('days-input', 'value')
     ]
 )
-def update_graph(buy_n_clicks, sell_n_clicks, next_day_n_clicks, shares):
+def update_graph(buy_n_clicks, sell_n_clicks, next_day_n_clicks, show_days_n_clicks, shares, days):
     global global_vars, df
     triggered_id = callback_context.triggered[0]['prop_id'].split('.')[0]
 
+    # 处理显示天数
+    if triggered_id == 'show-days-button' and days is not None:
+        try:
+            days = int(days)
+            if days >= 1:
+                global_vars['days_to_show'] = days
+        except (ValueError, TypeError):
+            global_vars['days_to_show'] = 30  # 无效输入时恢复默认值
+
+    # 处理下一天
     if triggered_id == 'next-day-button' and global_vars['current_idx'] < len(df) - 1:
         global_vars['current_idx'] += 1
 
@@ -310,8 +330,25 @@ def update_graph(buy_n_clicks, sell_n_clicks, next_day_n_clicks, shares):
     pbMRQ = row.get('pbMRQ', 0)
     deal = row.get('deal', '无')
     pctChg_sum = df.iloc[max(idx-pctChg_sum_N+1, 0):idx+1]['pctChg'].sum()
-    df.at[idx, 'pctChg_sum'] = pctChg_sum  # 存储数值以便绘图
+    df.at[idx, 'pctChg_sum'] = pctChg_sum
 
+    # 计算PE和PB百分位
+    historical_pe = df.iloc[:idx+1]['peTTM'].dropna()
+    historical_pb = df.iloc[:idx+1]['pbMRQ'].dropna()
+    if len(historical_pe) > 1:
+        current_pe = historical_pe.iloc[-1]
+        pe_exceed_count = (historical_pe < current_pe).sum()
+        pe_percentile = 100 * pe_exceed_count / len(historical_pe)
+    else:
+        pe_percentile = 0
+    if len(historical_pb) > 1:
+        current_pb = historical_pb.iloc[-1]
+        pb_exceed_count = (historical_pb < current_pb).sum()
+        pb_percentile = 100 * pb_exceed_count / len(historical_pb)
+    else:
+        pb_percentile = 0
+
+    # 处理买入
     if triggered_id == 'buy-button':
         可买数量 = int(shares) if shares else 0
         if 可买数量 >= 100:
@@ -323,6 +360,7 @@ def update_graph(buy_n_clicks, sell_n_clicks, next_day_n_clicks, shares):
                 global_vars['平均买入成本线'] = (旧持仓价值 + 买入金额) / global_vars['持仓股数'] if global_vars['持仓股数'] > 0 else 0
                 df.at[idx, 'deal'] = f'买入{可买数量}股@{close_price:.2f}'
 
+    # 处理卖出
     elif triggered_id == 'sell-button':
         卖出数量 = int(shares) if shares else 0
         if global_vars['持仓股数'] >= 卖出数量 >= 100:
@@ -347,14 +385,13 @@ def update_graph(buy_n_clicks, sell_n_clicks, next_day_n_clicks, shares):
     kline_info = html.Div([
         html.Span(f"日期: {row['date'].strftime('%Y-%m-%d')}", style={'marginRight': '20px'}),
         html.Span(f"收盘价: {close_price:.2f}", style={'marginRight': '20px'}),
-        html.Span(f"涨跌幅: {pctChg:.2f}%", style={'marginRight': '20px', 'color': 'red' if pctChg < 0 else 'green'}),
-        html.Span(f"最近{pctChg_sum_N}日涨跌幅: {pctChg_sum:.2f}%", style={'marginRight': '20px'}),
-        html.Span(f"日J: {daily_J:.2f}", style={'marginRight': '20px'}),
-        html.Span(f"周J: {weekly_J:.2f}", style={'marginRight': '20px'}),
-        html.Span(f"月J: {monthly_J:.2f}", style={'marginRight': '20px'}),
-        html.Span(f"操作: {deal}", style={'marginRight': '20px'}),
-        html.Span(f"PE: {peTTM:.2f}", style={'marginRight': '20px'}),
-        html.Span(f"PB: {pbMRQ:.2f}")
+        html.Span(f"涨跌幅: {pctChg:.2f}%", style={'marginRight': '20px', 'color': 'green' if pctChg < 0 else 'red'}),
+        html.Span(f"最近{pctChg_sum_N}日涨跌幅: {pctChg_sum:.2f}%", style={'marginRight': '20px', 'color': 'green' if pctChg_sum < 0 else 'red'}),
+        html.Span(f"日J: {daily_J:.2f}", style={'marginRight': '20px', 'color': 'green' if daily_J < 0 else 'black'}),
+        html.Span(f"周J: {weekly_J:.2f}", style={'marginRight': '20px', 'color': 'green' if weekly_J < 0 else 'black'}),
+        html.Span(f"月J: {monthly_J:.2f}", style={'marginRight': '20px', 'color': 'green' if monthly_J < 0 else 'black'}),
+        html.Span(f"PE: {peTTM:.2f} (百分位: {pe_percentile:.2f}%)", style={'marginRight': '20px', 'color': 'green' if pe_percentile < 30 else 'black'}),
+        html.Span(f"PB: {pbMRQ:.2f} (百分位: {pb_percentile:.2f}%)", style={'marginRight': '20px', 'color': 'green' if pb_percentile < 30 else 'black'})
     ], style={'display': 'flex', 'flexWrap': 'wrap'})
 
     # 生成账户信息
@@ -367,7 +404,7 @@ def update_graph(buy_n_clicks, sell_n_clicks, next_day_n_clicks, shares):
         html.Span(f"账户余额: {global_vars['账户余额']:.2f}", style={'marginRight': '20px'}),
         html.Span(f"盈亏金额: {盈亏金额:.2f}", style={'marginRight': '20px'}),
         html.Span(f"平均成本: {avg_cost_str}", style={'marginRight': '20px'}),
-        html.Span(f"盈亏百分比: {盈亏百分比:.2f}%", style={'color': pct_color})
+        html.Span(f"盈亏百分比: {盈亏百分比:.2f}%", style={'marginRight': '20px', 'color': 'green' if 盈亏百分比 < 0 else 'red'})
     ], style={
         'display': 'flex',
         'flexWrap': 'wrap',
@@ -379,8 +416,10 @@ def update_graph(buy_n_clicks, sell_n_clicks, next_day_n_clicks, shares):
         'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'
     })
 
-    # 绘制K线图
-    fig = plot_kline_with_deals(df, start_idx, idx)
+    # 计算绘图的起始索引
+    plot_start_idx = max(0, global_vars['current_idx'] - global_vars['days_to_show'])
+    fig = plot_kline_with_deals(df, plot_start_idx, idx)
+
     return fig, account_info, kline_info
 
 if __name__ == '__main__':
